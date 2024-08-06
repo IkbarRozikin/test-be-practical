@@ -16,27 +16,37 @@ const (
 )
 
 func GetBookings() ([]models.GetBookingsResponse, error) {
-	bookings, err := fetchBookings()
+	bookings, err := fetchData(bookingURL)
 	if err != nil {
 		return nil, utils.ErrMsg("error fetching bookings: %w", err)
 	}
 
-	consumptionItems, err := fetchConsumptionData()
+	consumptionItems, err := fetchData(consumptionURL)
 	if err != nil {
 		return nil, utils.ErrMsg("error fetching consumption data: %w", err)
 	}
 
-	if len(bookings) == 0 {
+	var bookingsData []models.Booking
+	if err := json.Unmarshal(bookings, &bookingsData); err != nil {
+		return nil, utils.ErrMsg("error decoding bookings JSON: %w", err)
+	}
+
+	var consumptionData []models.ConsumptionItem
+	if err := json.Unmarshal(consumptionItems, &consumptionData); err != nil {
+		return nil, utils.ErrMsg("error decoding consumption JSON: %w", err)
+	}
+
+	if len(bookingsData) == 0 {
 		return nil, utils.ErrMsg("no bookings found", err)
 	}
 
 	priceMap := make(map[string]int)
-	for _, item := range consumptionItems {
+	for _, item := range consumptionData {
 		priceMap[item.Name] = item.MaxPrice
 	}
 
 	officeDataMap := make(map[string]models.GetBookingsResponse)
-	for _, booking := range bookings {
+	for _, booking := range bookingsData {
 		result, exists := officeDataMap[booking.OfficeName]
 		if !exists {
 			result = models.GetBookingsResponse{
@@ -99,42 +109,38 @@ func GetBookings() ([]models.GetBookingsResponse, error) {
 	return officeDataSlice, nil
 }
 
-func fetchBookings() ([]models.Booking, error) {
-	resp, err := http.Get(bookingURL)
-	if err != nil {
-		return nil, utils.ErrMsg("error fetching data: %w", err)
-	}
-	defer resp.Body.Close()
+func fetchData(url string) ([]byte, error) {
+	ch := make(chan struct {
+		data []byte
+		err  error
+	})
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, utils.ErrMsg("error reading response body: %w", err)
-	}
+	go func() {
+		resp, err := http.Get(url)
+		if err != nil {
+			ch <- struct {
+				data []byte
+				err  error
+			}{err: utils.ErrMsg("error fetching data: %w", err)}
+			return
+		}
+		defer resp.Body.Close()
 
-	var bookings []models.Booking
-	if err := json.Unmarshal(body, &bookings); err != nil {
-		return nil, utils.ErrMsg("error decoding JSON: %w", err)
-	}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			ch <- struct {
+				data []byte
+				err  error
+			}{err: utils.ErrMsg("error reading response body: %w", err)}
+			return
+		}
 
-	return bookings, nil
-}
+		ch <- struct {
+			data []byte
+			err  error
+		}{data: body}
+	}()
 
-func fetchConsumptionData() ([]models.ConsumptionItem, error) {
-	resp, err := http.Get(consumptionURL)
-	if err != nil {
-		return nil, utils.ErrMsg("error fetching data: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, utils.ErrMsg("error reading response body: %w", err)
-	}
-
-	var consumptionItems []models.ConsumptionItem
-	if err := json.Unmarshal(body, &consumptionItems); err != nil {
-		return nil, utils.ErrMsg("error decoding consumption JSON", err)
-	}
-
-	return consumptionItems, nil
+	result := <-ch
+	return result.data, result.err
 }
